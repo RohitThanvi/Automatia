@@ -1,0 +1,43 @@
+# ---- Core ----
+pyyaml>=6.0.1
+pydantic>=2.7.0
+python-dotenv>=1.0.1
+loguru>=0.7.2
+
+# ---- LLM (local via Ollama) ----
+ollama>=0.3.0
+
+# ---- Audio / STT / wake word ----
+sounddevice>=0.4.6
+numpy>=1.26.0
+webrtcvad>=2.0.10
+faster-whisper>=1.0.3
+openwakeword>=0.6.0
+
+# ---- TTS ----
+pyttsx3>=2.90
+
+# ---- Browser automation (Phase 4) ----
+playwright>=1.45.0
+
+# ---- Office document generation (Phase 4) ----
+python-pptx>=1.0.2
+python-docx>=1.1.2
+
+# ---- Screen capture / OCR ----
+pillow>=10.3.0
+pytesseract>=0.3.10   # requires the Tesseract-OCR binary installed separately (see README)
+
+# ---- Windows automation (Phase 2, imported now for tool stubs) ----
+pywinauto>=0.6.8 ; platform_system == "Windows"
+psutil>=5.9.8
+pyautogui>=0.9.54
+pygetwindow>=0.0.9 ; platform_system == "Windows"
+
+# ---- Gesture recognition (Phase 6) ----
+mediapipe>=0.10.14
+opencv-python>=4.10.0
+
+# ---- Testing ----
+pytest>=8.2.0
+pytest-asyncio>=0.23.7
