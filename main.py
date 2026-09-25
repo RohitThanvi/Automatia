@@ -104,7 +104,6 @@ def _start_gesture_thread(agent, tts) -> None:
 
 def run_voice_mode() -> None:
     """Full hands-free loop: wake word -> record -> transcribe -> agent -> speak."""
-    import numpy as np
     import sounddevice as sd
 
     from core.agent import Agent

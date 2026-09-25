@@ -1,0 +1,97 @@
+diff --git a/apps/word.py b/apps/word.py
+index 2806549..95f0bd9 100644
+--- a/apps/word.py
++++ b/apps/word.py
+@@ -65,7 +65,7 @@ def create_document(
+ 
+     doc = Document()
+ 
+-    title_heading = doc.add_heading(title, level=0)
++    doc.add_heading(title, level=0)
+ 
+     for section in sections:
+         heading = section.get("heading")
+diff --git a/core/planner.py b/core/planner.py
+index 845fd19..67d06f8 100644
+--- a/core/planner.py
++++ b/core/planner.py
+@@ -76,11 +76,16 @@ class Planner:
+         conversation: list[dict[str, str]],
+     ) -> PlannerResponse:
+         """conversation is the running message history for the current task
+-        (spec section 18's short-term memory), NOT the full session history."""
++        (spec section 18's short-term memory), NOT the full session history.
++        It already contains the user's utterance (appended by the caller
++        before the plan/execute loop starts) plus any tool results from
++        earlier steps in this task, so it must NOT be re-added here — doing
++        so used to re-inject the original command as a fresh "user" turn
++        after every single tool call, since the last conversation entry
++        after a tool call is a 'tool' message and therefore never equal to
++        user_text."""
+         model = self._choose_model(user_text, len(conversation))
+         messages = [{"role": "system", "content": _SYSTEM_PROMPT}, *conversation]
+-        if not conversation or conversation[-1]["content"] != user_text:
+-            messages.append({"role": "user", "content": user_text})
+ 
+         log.info(f"Planning with model={model}")
+         response = self._client.chat(
+diff --git a/main.py b/main.py
+index 527a275..9c75611 100644
+--- a/main.py
++++ b/main.py
+@@ -104,7 +104,6 @@ def _start_gesture_thread(agent, tts) -> None:
+ 
+ def run_voice_mode() -> None:
+     """Full hands-free loop: wake word -> record -> transcribe -> agent -> speak."""
+-    import numpy as np
+     import sounddevice as sd
+ 
+     from core.agent import Agent
+diff --git a/requirements.txt b/requirements.txt
+index 2244ff8..8fe3c66 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -12,7 +12,18 @@ sounddevice>=0.4.6
+ numpy>=1.26.0
+ webrtcvad>=2.0.10
+ faster-whisper>=1.0.3
+-openwakeword>=0.6.0
++# openwakeword itself hard-pins `tflite-runtime<3` on Linux (see its
++# setup.py), but tflite-runtime has no published wheel for modern
++# Python versions — that pin makes `pip install -r requirements.txt`
++# fail outright on current Linux/Python combos. We only use
++# openwakeword's ONNX backend, so pull in just the deps that path
++# needs and install openwakeword itself WITHOUT its declared deps:
++#   pip install -r requirements.txt
++#   pip install --no-deps openwakeword>=0.6.0
++onnxruntime>=1.10.0,<2
++tqdm>=4.0,<5.0
++scipy>=1.3,<2
++scikit-learn>=1,<2
+ 
+ # ---- TTS ----
+ pyttsx3>=2.90
+diff --git a/security/permissions.py b/security/permissions.py
+index b68ecd9..e417d25 100644
+--- a/security/permissions.py
++++ b/security/permissions.py
+@@ -27,7 +27,6 @@ _RISK_TABLE: dict[str, RiskTier] = {
+     "list_open_windows": RiskTier.LOW,
+     "read_file": RiskTier.LOW,
+     "create_file": RiskTier.LOW,
+-    "write_file": RiskTier.LOW,
+     "type_text": RiskTier.LOW,
+     "press_key": RiskTier.LOW,
+     "hotkey": RiskTier.LOW,
+@@ -59,6 +58,11 @@ _RISK_TABLE: dict[str, RiskTier] = {
+ 
+     # MEDIUM — confirm before running
+     "close_application": RiskTier.MEDIUM,
++    # write_file can silently overwrite an existing file's entire
++    # contents (see tools/filesystem.py) — that's more destructive than
++    # rename/move/copy, which only relocate data, so it gets at least
++    # the same confirmation requirement they have.
++    "write_file": RiskTier.MEDIUM,
+     "rename_file": RiskTier.MEDIUM,
+     "move_file": RiskTier.MEDIUM,
+     "copy_file": RiskTier.MEDIUM,

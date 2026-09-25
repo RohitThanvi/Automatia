@@ -27,7 +27,6 @@ _RISK_TABLE: dict[str, RiskTier] = {
     "list_open_windows": RiskTier.LOW,
     "read_file": RiskTier.LOW,
     "create_file": RiskTier.LOW,
-    "write_file": RiskTier.LOW,
     "type_text": RiskTier.LOW,
     "press_key": RiskTier.LOW,
     "hotkey": RiskTier.LOW,
@@ -59,6 +58,11 @@ _RISK_TABLE: dict[str, RiskTier] = {
 
     # MEDIUM — confirm before running
     "close_application": RiskTier.MEDIUM,
+    # write_file can silently overwrite an existing file's entire
+    # contents (see tools/filesystem.py) — that's more destructive than
+    # rename/move/copy, which only relocate data, so it gets at least
+    # the same confirmation requirement they have.
+    "write_file": RiskTier.MEDIUM,
     "rename_file": RiskTier.MEDIUM,
     "move_file": RiskTier.MEDIUM,
     "copy_file": RiskTier.MEDIUM,
