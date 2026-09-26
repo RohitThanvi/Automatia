@@ -33,7 +33,11 @@ class AudioConfig(BaseModel):
     sample_rate: int = 16000
     channels: int = 1
     vad_aggressiveness: int = 2
-    max_utterance_seconds: int = 20
+    # Hard safety cap, not the normal end-of-utterance trigger (that's
+    # silence_timeout_ms / end_phrase below) — raised from the original
+    # 20s because 20s cuts off exactly the long-dictation use case
+    # end_phrase mode exists for (see voice/stt.py's module docstring).
+    max_utterance_seconds: int = 60
     silence_timeout_ms: int = 900
     end_phrase: Optional[str] = None
     end_phrase_recheck_ms: int = 1500
@@ -140,7 +144,22 @@ def _load_config(path: str) -> AppConfig:
     different lru_cache keys otherwise, which silently created two
     independent config objects (one of which nothing else ever read)."""
     with open(path, "r", encoding="utf-8") as f:
-        raw: dict[str, Any] = yaml.safe_load(f) or {}
+        parsed = yaml.safe_load(f)
+    if not parsed:
+        # An empty/whitespace-only config.yaml parses to None, and
+        # AppConfig(**{}) happily falls back to every class default
+        # with no error — which silently discards all of the user's
+        # settings (wake word phrase/model, LLM models, audio.end_phrase,
+        # etc.) rather than failing loudly. Surface it instead.
+        import warnings
+
+        warnings.warn(
+            f"{path} is empty or contains no settings — every config value is "
+            "falling back to its built-in default. If you edited this file, "
+            "check that your changes were actually saved.",
+            stacklevel=2,
+        )
+    raw: dict[str, Any] = parsed or {}
     return AppConfig(**raw)
 
 

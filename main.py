@@ -107,7 +107,6 @@ def run_voice_mode() -> None:
     import threading
     import time
 
-    import numpy as np
     import sounddevice as sd
 
     from core.agent import Agent
@@ -192,7 +191,12 @@ def run_voice_mode() -> None:
                     last_status_write = now
 
                 frame, _ = stream.read(frame_samples)
-                if muted.is_set():
+                if muted.is_set() or agent.sm.state == AgentState.PAUSED:
+                    # Previously only `muted` was checked here, so the
+                    # dashboard's Pause/Resume/Stop/Cancel buttons updated
+                    # agent.sm's state but had no actual effect on this
+                    # loop — wake-word detection and recording continued
+                    # regardless. Mute was the only command that worked.
                     continue
 
                 if wake.process_frame(frame.flatten()):

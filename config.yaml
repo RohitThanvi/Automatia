@@ -1,0 +1,90 @@
+# ============================================================
+# PC Agent — central configuration
+# Nothing in the codebase should hard-code these values.
+#
+# NOTE: this file was found EMPTY (0 bytes) during debugging. An
+# empty config.yaml is not an error — core/config.py's
+# `yaml.safe_load(f) or {}` falls back to AppConfig()'s class
+# defaults silently, with no warning printed anywhere. That means
+# every custom setting below (wake word phrase/model, the LLM
+# models, and critically audio.end_phrase) was silently reset to
+# its class default. Since end_phrase defaults to null, this alone
+# was enough to make the new end-word feature never activate.
+# ============================================================
+
+wake_word:
+  phrase: "hey_jarvis"
+  # openwakeword model name or path to a custom .onnx/.tflite model.
+  # "alexa" is a bundled demo model; replace with a custom-trained
+  # model for "start" when you have one (see voice/wakeword.py docstring).
+  model: "hey_jarvis"
+  threshold: 0.5
+  sample_rate: 16000
+  frame_ms: 80
+
+audio:
+  input_device: null          # null = system default; set to a device index otherwise
+  sample_rate: 16000
+  channels: 1
+  vad_aggressiveness: 2       # webrtcvad: 0 (least aggressive) - 3 (most aggressive)
+  max_utterance_seconds: 60   # hard safety cap; raised so end_phrase dictation isn't cut off
+  silence_timeout_ms: 900     # stop listening after this much trailing silence (ignored while end_phrase is set)
+  end_phrase: "over"          # say this to end an utterance instead of pausing; null disables it
+  end_phrase_recheck_ms: 1500 # how often (ms of trailing silence) to re-check for the phrase
+
+stt:
+  provider: faster_whisper
+  model: "large-v3-turbo"      # falls back to "small" automatically if it fails to load
+  device: "auto"               # auto | cuda | cpu
+  compute_type: "auto"         # auto | float16 | int8
+  language: null                # null = auto-detect (handles Hindi/English mixed speech)
+
+llm:
+  provider: ollama
+  host: "http://localhost:11434"
+  model: "qwen3:30b-a3b"
+  fast_model: "qwen2.5:3b"     # cheap local model for trivial single-tool commands
+  temperature: 0.2
+  max_tokens: 1024
+  request_timeout_s: 300
+
+vision:
+  enabled: true
+  provider: ollama
+  model: "gemma3:27b"
+  # Vision is only invoked when UI Automation + OCR both fail to
+  # resolve a target element. It is never polled continuously.
+
+tts:
+  engine: pyttsx3               # pyttsx3 (built-in, offline, no setup) | piper | kokoro
+  piper_model_path: null        # required only if engine: piper
+  rate: 180
+  voice: null                   # null = engine default
+
+gestures:
+  enabled: false                 # off by default; implemented in Phase 6
+  camera_index: 0
+
+security:
+  require_confirmation: true
+  # Risk tiers are defined in security/permissions.py — do not
+  # bypass confirmation for MEDIUM/HIGH risk tools from config.
+  auto_approve_low_risk: true
+  confirmation_timeout_s: 30    # if the user doesn't respond, treat as "deny"
+
+memory:
+  db_path: "data/agent_memory.sqlite3"
+
+dashboard:
+  enabled: false                 # Phase 7
+  host: "127.0.0.1"
+  port: 8765
+
+logging:
+  level: "INFO"
+  file: "logs/agent.log"
+  max_bytes: 5_000_000
+  backup_count: 3
+
+paths:
+  workspace_dir: "~/PCAgentWorkspace"   # default root for create_file/organize commands
