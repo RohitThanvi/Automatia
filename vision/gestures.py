@@ -17,6 +17,7 @@ frame") — classification is 21-point landmark geometry only.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -107,12 +108,18 @@ class GestureController:
     config.gestures.enabled is true — importing this module never
     touches the camera or MediaPipe on its own."""
 
-    def __init__(self, on_action: Callable[[str], None], cooldown_s: float = 1.0) -> None:
+    def __init__(
+        self,
+        on_action: Callable[[str], None],
+        cooldown_s: float = 1.0,
+        paused: Optional["threading.Event"] = None,
+    ) -> None:
         self._on_action = on_action
         self._debouncer = _Debouncer(cooldown_s=cooldown_s)
         self._wrist_x_history: list[tuple[float, float]] = []  # (timestamp, x)
         self._swipe_window_s = 0.5
         self._swipe_min_delta = 0.25  # fraction of frame width
+        self._paused = paused  # set externally (e.g. by the dashboard's "disable gestures" command)
 
     def _check_swipe(self, wrist_x: float) -> Optional[str]:
         now = time.time()
@@ -132,6 +139,8 @@ class GestureController:
     def process_landmarks(self, landmarks: list[tuple[float, float]]) -> Optional[str]:
         """Feed one frame's 21 landmarks in; returns the debounced
         gesture name if one fired this frame, else None."""
+        if self._paused is not None and self._paused.is_set():
+            return None
         swipe = self._check_swipe(landmarks[_WRIST][0])
         gesture = swipe or classify_static_gesture(landmarks)
         if gesture is None:

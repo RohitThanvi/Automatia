@@ -97,3 +97,18 @@ def test_gesture_action_mapping_covers_all_gestures():
 
     expected = {"open_palm", "pinch", "thumbs_up", "closed_fist", "swipe_left", "swipe_right"}
     assert set(GESTURE_ACTIONS.keys()) == expected
+
+
+def test_paused_controller_ignores_gestures():
+    import threading
+
+    actions = []
+    paused = threading.Event()
+    paused.set()
+    controller = GestureController(on_action=actions.append, cooldown_s=0.1, paused=paused)
+
+    lm = _make_landmarks({"index": True, "middle": True, "ring": True, "pinky": True})
+    result = controller.process_landmarks(lm)
+
+    assert result is None
+    assert actions == []

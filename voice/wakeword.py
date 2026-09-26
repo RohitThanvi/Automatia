@@ -45,7 +45,8 @@ class WakeWordDetector:
 
         from openwakeword.model import Model
 
-        self._model = Model(wakeword_models=[cfg.model],inference_framework="onnx",)
+        self._model = Model(wakeword_models=[cfg.model] if cfg.model not in _BUNDLED_MODELS else None)
+
     def process_frame(self, frame: np.ndarray) -> bool:
         """frame: int16 mono PCM samples at 16kHz, ~80ms chunks.
         Returns True the instant the wake word score crosses threshold."""

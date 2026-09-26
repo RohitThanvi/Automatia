@@ -65,7 +65,7 @@ def create_document(
 
     doc = Document()
 
-    doc.add_heading(title, level=0)
+    title_heading = doc.add_heading(title, level=0)
 
     for section in sections:
         heading = section.get("heading")

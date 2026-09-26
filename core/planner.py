@@ -76,16 +76,11 @@ class Planner:
         conversation: list[dict[str, str]],
     ) -> PlannerResponse:
         """conversation is the running message history for the current task
-        (spec section 18's short-term memory), NOT the full session history.
-        It already contains the user's utterance (appended by the caller
-        before the plan/execute loop starts) plus any tool results from
-        earlier steps in this task, so it must NOT be re-added here — doing
-        so used to re-inject the original command as a fresh "user" turn
-        after every single tool call, since the last conversation entry
-        after a tool call is a 'tool' message and therefore never equal to
-        user_text."""
+        (spec section 18's short-term memory), NOT the full session history."""
         model = self._choose_model(user_text, len(conversation))
         messages = [{"role": "system", "content": _SYSTEM_PROMPT}, *conversation]
+        if not conversation or conversation[-1]["content"] != user_text:
+            messages.append({"role": "user", "content": user_text})
 
         log.info(f"Planning with model={model}")
         response = self._client.chat(

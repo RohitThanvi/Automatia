@@ -68,13 +68,50 @@ with its own debounce cooldown so a held pose doesn't fire repeatedly.
 Off by default (`gestures.enabled: false`); when enabled, `main.py` runs
 it on its own thread alongside the wake-word loop.
 
-## What's intentionally NOT built yet (see the phase plan)
+**Phase 7 (done):** a local dashboard (`dashboard/server.py`, FastAPI —
+single embedded HTML page, no separate build step, see the module
+docstring for why) shows live agent state and lets you Pause/Resume/
+Cancel/Stop/Mute/toggle gestures from a browser. It talks to the running
+`python main.py` process through `core/status_bus.py` — two small JSON
+files (`data/status.json`, `data/commands.json`), written atomically, so
+the dashboard and agent are separate processes that can't take each other
+down. `tray.py` adds a Windows system tray icon (via pystray) to
+start/stop the agent, open the dashboard, and toggle "start with Windows"
+via a Startup-folder shortcut — no admin rights needed.
 
-- Local web dashboard, system tray (Phase 7)
-- PyInstaller packaging / auto-start with Windows (Phase 8)
+**Phase 8 (partial):** `build/pyinstaller.spec` packages the agent, tray,
+and dashboard into a `PC_Agent/` folder of three .exe's sharing one set of
+dependencies (`--onedir`, not `--onefile` — see the spec's comment for
+why). **This spec is written but untested** — I can't run PyInstaller
+against Windows-only dependencies (pywinauto, pystray's win32 backend)
+from this sandbox, so treat it as a strong starting point, not a
+guaranteed-working build; you'll likely need to iterate on hidden-imports
+once you actually run it. Performance-wise, the architecture already does
+what Phase 8 asks for: models load once at startup and stay resident
+(`SpeechToText`/`Planner`/`TextToSpeech` are constructed once in
+`run_voice_mode`, not per-utterance), the wake-word loop never touches the
+LLM, and the fast/slow model router avoids the 30B model for trivial
+commands.
 
-These are stubbed with clear "not yet available" errors rather than fake
-implementations, per the project's engineering rules.
+## Running the dashboard and tray
+
+```powershell
+# Terminal 1 — the agent itself
+python main.py
+
+# Terminal 2 — the dashboard (optional, separate process)
+python -m dashboard.server
+# then open http://127.0.0.1:8765 in a browser
+
+# OR, instead of both of the above: the tray icon manages both for you
+python tray.py
+```
+
+## What's intentionally NOT built yet
+
+- A trained "start" wake-word model (see the wake-word section above)
+- Building/testing the actual .exe from `build/pyinstaller.spec`
+- UPX compression, code signing, or an installer (.msi/.exe) wrapper
 
 ## Try the new features (text mode)
 
@@ -90,18 +127,41 @@ The LLM plans and writes the actual content; `create_presentation`/
 `create_document` just take that structured content and turn it into a
 real file.
 
+## Optional: end-phrase mode (say "over" to stop, instead of pausing)
+
+By default the agent ends your utterance after `silence_timeout_ms` of
+quiet — good for short commands, but it'll cut you off mid-thought if
+you're dictating something long (an essay, a multi-step instruction) and
+pause naturally. Set an end phrase in `config.yaml` to change that:
+
+```yaml
+audio:
+  end_phrase: "over"          # or "that's all", "done talking", etc.
+  end_phrase_recheck_ms: 1500 # how often to re-check during a pause
+```
+
+With this set, an ordinary pause no longer ends the recording — only
+saying the phrase (or hitting `max_utterance_seconds`) does. There's no
+way to detect a spoken phrase without transcribing, so this works by
+re-transcribing what's been said so far every `end_phrase_recheck_ms` of
+continued silence, checking only whether it *ends with* the phrase — not
+a continuous stream, just a check on each pause. The phrase itself is
+stripped from the final text before it reaches the planner, so saying
+"write a haiku about rain, over" sends "write a haiku about rain".
+
 ## 1. Prerequisites (Windows)
 
 1. **Python 3.11 or 3.12** (64-bit) — https://python.org
-2. **Ollama** — https://ollama.com/download, then pull the models:
+2. **Ollama** — https://ollama.com/download, then pull the models
+   configured in `config.yaml`:
    ```powershell
-   ollama pull qwen3:30b-a3b
+   ollama pull qwen2.5:7b
    ollama pull qwen2.5:3b
+   ollama pull gemma3:27b
    ```
-   `qwen3:30b-a3b` needs a reasonably strong GPU (16GB+ VRAM recommended).
-   If your laptop can't run it, edit `config.yaml` and point both
-   `llm.model` and `llm.fast_model` at something smaller, e.g. `qwen2.5:7b`
-   and `qwen2.5:3b`.
+   Adjust `llm.model`/`llm.fast_model`/`vision.model` in `config.yaml` to
+   match whatever you actually pull — those three are just what this
+   config currently points at.
 3. **Tesseract OCR** (for `read_screen`/`find_ui_element`) —
    https://github.com/UB-Mannheim/tesseract/wiki — install and make sure
    `tesseract.exe` is on your PATH.
@@ -174,9 +234,10 @@ The state machine, permission system, tool registry, filesystem tools,
 executor retry/categorization logic, UIA platform guards, PowerPoint/Word
 generation, and VS Code project tools are all covered by fast,
 deterministic tests that don't need a microphone, GPU, or Ollama running.
-(67 tests, all passing as of this build — including gesture classification
-with synthetic hand-landmark data and the vision-model fallback's response
-parsing.)
+(99 tests, all passing as of this build — including gesture classification
+with synthetic hand-landmark data, the vision-model fallback's response
+parsing, the status bus/dashboard API, and the tray's process-management
+logic.)
 
 ## 7. Project layout
 
@@ -185,11 +246,13 @@ Module layout follows the phase plan; each `tools/*.py` and
 `computer/*.py` file self-registers its functions with
 `core/tool_registry.py` on import (see `main.py:_import_all_tools`).
 
-## What to build next (Phase 7 / 8)
+## What to build next
 
-Phase 7 is the local web dashboard (FastAPI + React) and Windows system
-tray icon — pure UX, no new agent capability. Phase 8 is packaging
-(PyInstaller build, auto-start with Windows) and a performance pass
-(persistent model processes, caching UI state between calls). Both are
-lower-risk, mechanical work compared to Phases 1-6, which is why they're
-last — everything the agent can actually *do* is now in place.
+All 8 phases from the original plan now have a real implementation. What's
+left is hardening, not new capability:
+- Iterate on `build/pyinstaller.spec` against a real Windows build (it's
+  untested, see above)
+- Train or source a proper "start" wake-word model
+- Broaden the ChatGPT selectors (`apps/chatgpt.py`) if/when the site's DOM
+  changes them
+- More per-application recovery strategies as you hit real failures in use

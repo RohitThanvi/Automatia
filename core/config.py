@@ -35,6 +35,8 @@ class AudioConfig(BaseModel):
     vad_aggressiveness: int = 2
     max_utterance_seconds: int = 20
     silence_timeout_ms: int = 900
+    end_phrase: Optional[str] = None
+    end_phrase_recheck_ms: int = 1500
 
 
 class SttConfig(BaseModel):
