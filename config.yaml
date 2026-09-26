@@ -32,20 +32,27 @@ audio:
   end_phrase: "over"          # say this to end an utterance instead of pausing; null disables it
   end_phrase_recheck_ms: 1500 # how often (ms of trailing silence) to re-check for the phrase
 
+# stt.provider / llm.provider: "faster_whisper"/"ollama" (fully local, free,
+# needs a real GPU to be fast) or "groq" (hosted, needs GROQ_API_KEY env var +
+# internet, but is dramatically faster on CPU-only machines — get a key at
+# https://console.groq.com/keys, then PowerShell:
+#   $env:GROQ_API_KEY = "gsk_..."
+# Set that in every terminal you run main.py / dashboard.server from, or add
+# it to your PowerShell profile so it's always set.
 stt:
-  provider: faster_whisper
-  model: "large-v3-turbo"      # falls back to "small" automatically if it fails to load
-  device: "auto"               # auto | cuda | cpu
-  compute_type: "auto"         # auto | float16 | int8
+  provider: groq
+  model: "whisper-large-v3-turbo"   # groq's hosted STT model id
+  device: "auto"               # ignored when provider is groq
+  compute_type: "auto"         # ignored when provider is groq
   language: null                # null = auto-detect (handles Hindi/English mixed speech)
 
 llm:
-  provider: ollama
-  host: "http://localhost:11434"
-  model: "qwen3:30b-a3b"
-  fast_model: "qwen2.5:3b"     # cheap local model for trivial single-tool commands
+  provider: groq
+  host: "http://localhost:11434"   # ignored when provider is groq
+  model: "openai/gpt-oss-120b"
+  fast_model: "openai/gpt-oss-20b"   # cheap model for trivial single-tool commands
   temperature: 0.2
-  max_tokens: 1024
+  max_tokens: 8192
   request_timeout_s: 300
 
 vision:
@@ -62,7 +69,7 @@ tts:
   voice: null                   # null = engine default
 
 gestures:
-  enabled: false                 # off by default; implemented in Phase 6
+  enabled: true                 # off by default; implemented in Phase 6
   camera_index: 0
 
 security:

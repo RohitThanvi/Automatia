@@ -45,7 +45,16 @@ class WakeWordDetector:
 
         from openwakeword.model import Model
 
-        self._model = Model(wakeword_models=[cfg.model] if cfg.model not in _BUNDLED_MODELS else None)
+        # openwakeword's Model() defaults wakeword_models to [], not None —
+        # passing None explicitly crashes inside its own __init__ (it does
+        # `elif len(wakeword_models) >= 1` with no None-handling branch
+        # before that). Bundled model names (e.g. "hey_jarvis") are valid
+        # entries in that same list per openwakeword's own docs, so always
+        # pass a one-item list — this also fixes a second bug: omitting the
+        # arg loads ALL bundled models (alexa, hey_jarvis, hey_mycroft,
+        # timer) and process_frame() below would fire on ANY of them, not
+        # just the one configured in wake_word.model.
+        self._model = Model(wakeword_models=[cfg.model])
 
     def process_frame(self, frame: np.ndarray) -> bool:
         """frame: int16 mono PCM samples at 16kHz, ~80ms chunks.

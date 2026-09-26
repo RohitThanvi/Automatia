@@ -19,6 +19,7 @@ the phrase — not on every frame, and not a continuous stream.
 
 from __future__ import annotations
 
+import os
 import queue
 import re
 import time
@@ -152,6 +153,31 @@ class AudioRecorder:
 class SpeechToText:
     def __init__(self) -> None:
         cfg = get_config().stt
+        self._provider = cfg.provider
+        self._language = cfg.language
+
+        if self._provider == "groq":
+            # No local model to load at all — every transcribe() call is a
+            # network request to Groq's hosted whisper-large-v3-turbo.
+            # This is what actually fixes CPU-bound latency: local
+            # faster-whisper on a CPU was re-transcribing the whole growing
+            # buffer on every end-phrase recheck (~20s+ per call observed);
+            # Groq's LPU inference does the same call in well under a second.
+            from groq import Groq
+
+            api_key = os.environ.get("GROQ_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "stt.provider is 'groq' in config.yaml but the GROQ_API_KEY "
+                    "environment variable is not set. Get a key at "
+                    "https://console.groq.com/keys, then (PowerShell) "
+                    '$env:GROQ_API_KEY = "gsk_..." before running.'
+                )
+            self._groq_client = Groq(api_key=api_key)
+            self._groq_model = cfg.model
+            log.info(f"Using Groq hosted STT ('{self._groq_model}') — no local model to load")
+            return
+
         from faster_whisper import WhisperModel
 
         device = cfg.device
@@ -168,8 +194,6 @@ class SpeechToText:
             log.warning(f"Failed to load '{cfg.model}' ({e}); falling back to 'small'")
             self._model = WhisperModel("small", device=device, compute_type=compute_type)
 
-        self._language = cfg.language
-
     @staticmethod
     def _detect_device() -> str:
         try:
@@ -179,9 +203,40 @@ class SpeechToText:
         except ImportError:
             return "cpu"
 
+    @staticmethod
+    def _to_wav_bytes(audio_int16: np.ndarray, sample_rate: int = 16000) -> bytes:
+        """Groq's transcription endpoint wants a file, not raw PCM — wrap
+        the int16 samples in a minimal WAV container using only the
+        stdlib (no extra dependency for this)."""
+        import io
+        import wave
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # int16 = 2 bytes
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio_int16.tobytes())
+        return buf.getvalue()
+
+    def _transcribe_groq(self, audio_int16: np.ndarray) -> str:
+        wav_bytes = self._to_wav_bytes(audio_int16)
+        result = self._groq_client.audio.transcriptions.create(
+            file=("audio.wav", wav_bytes),
+            model=self._groq_model,
+            language=self._language,  # None -> auto-detect
+        )
+        return (result.text or "").strip()
+
     def transcribe(self, audio_int16: np.ndarray) -> str:
         if audio_int16.size == 0:
             return ""
+
+        if self._provider == "groq":
+            text = self._transcribe_groq(audio_int16)
+            log.info(f"Transcribed {len(text)} chars (groq)")
+            return text
+
         audio_float = audio_int16.astype(np.float32) / 32768.0
         segments, _info = self._model.transcribe(
             audio_float,

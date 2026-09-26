@@ -12,6 +12,8 @@ fast and slow model.
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -22,6 +24,40 @@ from core.logging_setup import get_logger
 from core.tool_registry import registry
 
 log = get_logger()
+
+
+class _GroqChatAdapter:
+    """Wraps groq.Groq so it exposes the same `.chat(model=, messages=,
+    tools=, options=) -> {"message": {...}}` shape planner.py already
+    expects from ollama.Client — the rest of this module doesn't need to
+    know which provider it's actually talking to.
+
+    Groq's API is OpenAI-compatible, which differs from Ollama's shape in
+    two ways that matter here: tool_call arguments come back as a JSON
+    *string*, not a dict, and finished content lives at
+    choice.message.content, not response["message"]["content"]."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def chat(self, model: str, messages: list, tools: list, options: dict) -> dict:
+        completion = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools or None,
+            temperature=options.get("temperature"),
+            max_tokens=options.get("num_predict"),
+        )
+        choice = completion.choices[0].message
+        tool_calls = []
+        for tc in choice.tool_calls or []:
+            try:
+                args = json.loads(tc.function.arguments)
+            except (json.JSONDecodeError, TypeError):
+                log.warning(f"Groq returned non-JSON tool arguments: {tc.function.arguments!r}")
+                args = {}
+            tool_calls.append({"function": {"name": tc.function.name, "arguments": args}})
+        return {"message": {"tool_calls": tool_calls, "content": choice.content or ""}}
 
 _SYSTEM_PROMPT = """You are the planning brain of a Windows desktop AI agent that controls \
 the computer on the user's behalf via a fixed set of tools.
@@ -54,7 +90,20 @@ class PlannerResponse:
 class Planner:
     def __init__(self) -> None:
         cfg = get_config().llm
-        self._client = ollama.Client(host=cfg.host, timeout=cfg.request_timeout_s)
+        if cfg.provider == "groq":
+            from groq import Groq
+
+            api_key = os.environ.get("GROQ_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "llm.provider is 'groq' in config.yaml but the GROQ_API_KEY "
+                    "environment variable is not set. Get a key at "
+                    "https://console.groq.com/keys, then (PowerShell) "
+                    '$env:GROQ_API_KEY = "gsk_..." before running.'
+                )
+            self._client = _GroqChatAdapter(Groq(api_key=api_key))
+        else:
+            self._client = ollama.Client(host=cfg.host, timeout=cfg.request_timeout_s)
         self._model = cfg.model
         self._fast_model = cfg.fast_model
         self._temperature = cfg.temperature
