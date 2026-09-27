@@ -166,6 +166,22 @@ class GestureController:
         return gesture
 
     @staticmethod
+    def _open_camera(cv2, camera_index: int):
+        """cv2.VideoCapture's default backend on Windows (MSMF) is known
+        to hang or stall with some webcam drivers — DirectShow is the
+        documented workaround and is what was actually causing the
+        preview window to freeze. Falls back to the default backend on
+        non-Windows platforms or if DSHOW isn't available."""
+        import sys
+
+        if sys.platform == "win32" and hasattr(cv2, "CAP_DSHOW"):
+            cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                return cap
+            cap.release()
+        return cv2.VideoCapture(camera_index)
+
+    @staticmethod
     def _load_mediapipe_hands():
         """Import mediapipe and return the Hands class, tolerating builds
         where `mediapipe.solutions` isn't exposed on the top-level package
@@ -215,7 +231,7 @@ class GestureController:
         hands = mp_hands.Hands(
             max_num_hands=1, min_detection_confidence=0.6, min_tracking_confidence=0.5
         )
-        cap = cv2.VideoCapture(cfg.camera_index)
+        cap = self._open_camera(cv2, cfg.camera_index)
         if not cap.isOpened():
             log.error(
                 f"Could not open camera index {cfg.camera_index}. Check "
@@ -262,6 +278,12 @@ class GestureController:
                     key = cv2.waitKey(1) & 0xFF
                     if key in (ord("q"), 27):
                         cv2.destroyWindow(window_name)
+                        cfg.show_preview = False
+                    elif cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                        # User closed the window via the titlebar X rather
+                        # than q/Esc — calling imshow on a destroyed window
+                        # on the next frame is what actually caused the
+                        # "frozen" preview, so stop targeting it here.
                         cfg.show_preview = False
         finally:
             cap.release()

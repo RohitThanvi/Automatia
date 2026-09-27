@@ -73,28 +73,29 @@ def run_text_mode() -> None:
         print(f"[AGENT] {reply}")
 
 
-def _start_gesture_thread(agent, tts, paused_event) -> None:
+def _start_gesture_thread(gesture_action_queue: "queue.Queue[str]", paused_event) -> None:
     """Spec section 15: gestures map to agent actions. Runs on its own
-    thread since the wake-word loop below also blocks on audio reads —
-    the two loops are independent producers that both drive the same
-    Agent, which is safe here because Agent.handle_utterance runs to
-    completion before the next call (no concurrent task execution)."""
+    thread since the wake-word loop below also blocks on audio reads.
+
+    IMPORTANT: on_gesture_action only enqueues — it must never call
+    tts.speak()/agent.handle_utterance() directly. Those used to be
+    called synchronously here, on the gesture thread, from inside the
+    per-frame camera loop. That caused two real bugs: (1) pyttsx3's
+    SAPI engine is a COM object bound to the thread that created it, so
+    calling it from this second thread could hang indefinitely; (2)
+    while that call blocked, this thread stopped servicing
+    cv2.waitKey/imshow, which is exactly what made the preview window
+    show as frozen/"Not Responding". The queue keeps all agent/TTS
+    calls on the main thread, where run_voice_mode already serializes
+    them with the wake-word flow."""
+    import queue
     import threading
 
     from vision.gestures import GestureController
 
     def on_gesture_action(action: str) -> None:
         log.info(f"Gesture action: {action}")
-        if action == "wake":
-            agent.start_wake()
-            tts.speak("I'm listening.")
-        elif action in ("stop", "confirm"):
-            # Reuses the same control-word handling as spoken "stop"/
-            # "confirm" so there's exactly one place that logic lives.
-            reply = agent.handle_utterance(action)
-            tts.speak(reply)
-        elif action in ("next", "previous", "click"):
-            log.info(f"Gesture '{action}' received (no bound action outside an active UI context yet)")
+        gesture_action_queue.put(action)
 
     controller = GestureController(on_action=on_gesture_action, paused=paused_event)
     thread = threading.Thread(target=controller.run, daemon=True, name="gesture-loop")
@@ -104,6 +105,7 @@ def _start_gesture_thread(agent, tts, paused_event) -> None:
 
 def run_voice_mode() -> None:
     """Full hands-free loop: wake word -> record -> transcribe -> agent -> speak."""
+    import queue
     import threading
     import time
 
@@ -138,9 +140,28 @@ def run_voice_mode() -> None:
     # for why this is file-backed IPC rather than a shared object.
     muted = threading.Event()
     gestures_paused = threading.Event()
+    gesture_action_queue: "queue.Queue[str]" = queue.Queue()
 
     if cfg.gestures.enabled:
-        _start_gesture_thread(agent, tts, gestures_paused)
+        _start_gesture_thread(gesture_action_queue, gestures_paused)
+
+    def apply_pending_gesture_actions() -> None:
+        """Runs on the main thread only — see the comment in
+        _start_gesture_thread for why tts/agent must never be called
+        from the gesture thread itself."""
+        while True:
+            try:
+                action = gesture_action_queue.get_nowait()
+            except queue.Empty:
+                return
+            if action == "wake":
+                agent.start_wake()
+                tts.speak("I'm listening.")
+            elif action in ("stop", "confirm"):
+                reply = agent.handle_utterance(action)
+                tts.speak(reply)
+            elif action in ("next", "previous", "click"):
+                log.info(f"Gesture '{action}' received (no bound action outside an active UI context yet)")
 
     def apply_pending_commands() -> bool:
         """Returns True if a 'stop' command should end the process."""
@@ -178,6 +199,7 @@ def run_voice_mode() -> None:
         try:
             while True:
                 apply_pending_commands()
+                apply_pending_gesture_actions()
 
                 now = time.time()
                 if now - last_status_write >= status_write_interval_s:
