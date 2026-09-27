@@ -16,8 +16,15 @@ from typing import Any, Optional
 import yaml
 from pydantic import BaseModel, Field
 
+from dotenv import load_dotenv
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+
+# Load PROJECT_ROOT/.env (GROQ_API_KEY, etc.) into os.environ once, as soon
+# as this module is imported. override=False so a variable already set in
+# the real environment always wins over the .env file.
+load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
 class WakeWordConfig(BaseModel):
