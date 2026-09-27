@@ -65,6 +65,14 @@ _CURSOR_SMOOTHING = 0.35  # EMA factor: higher = snappier, lower = smoother but 
 _CURSOR_MARGIN = 0.12     # fraction trimmed off each camera-frame edge before mapping to
                           # the screen, so you don't have to reach into the frame's corners
 
+# Thumb-tip-to-index-tip distance (normalized [0,1] frame units) below
+# which a pinch registers. 0.04 (the original value) proved too tight
+# for typical webcam distance/resolution in practice; 0.065 is more
+# forgiving. If pinches still don't register, watch the "pinch dist"
+# readout in the preview window and raise this further to match.
+_PINCH_THRESHOLD = 0.065
+_CLICK_COOLDOWN_S = 0.35  # deliberately shorter than the 1.0s shared with wake/stop/confirm
+
 
 def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
@@ -98,7 +106,7 @@ def classify_static_gesture(landmarks: list[tuple[float, float]]) -> Optional[st
         landmarks[_THUMB_TIP][0] < landmarks[_THUMB_MCP][0] - 0.02
 
     pinch_dist = _dist(landmarks[_THUMB_TIP], landmarks[_FINGER_TIPS["index"]])
-    if pinch_dist < 0.04:
+    if pinch_dist < _PINCH_THRESHOLD:
         return "pinch"
 
     if all(extended.values()) and thumb_extended:
@@ -148,6 +156,7 @@ class GestureController:
         self._paused = paused  # set externally (e.g. by the dashboard's "disable gestures" command)
         self._cursor_smoothed: Optional[tuple[float, float]] = None
         self._cursor_screen_pos: Optional[tuple[int, int]] = None
+        self._click_debounce = _Debouncer(cooldown_s=_CLICK_COOLDOWN_S)
 
     def _check_swipe(self, wrist_x: float) -> Optional[str]:
         now = time.time()
@@ -170,7 +179,11 @@ class GestureController:
         if self._paused is not None and self._paused.is_set():
             return None
         swipe = self._check_swipe(landmarks[_WRIST][0])
-        gesture = swipe or classify_static_gesture(landmarks)
+        # Static gestures (especially pinch) take precedence over swipe:
+        # reaching toward something to pinch it often moves the wrist
+        # enough to also look like a swipe, and a deliberate pinch should
+        # never get silently swallowed by that incidental motion.
+        gesture = classify_static_gesture(landmarks) or swipe
         if gesture is None:
             return None
         if not self._debouncer.should_fire(gesture):
@@ -319,22 +332,35 @@ class GestureController:
                     if pointing:
                         self._update_cursor(pyautogui, points, screen_w, screen_h)
 
+                    pinch_dist = _dist(points[_THUMB_TIP], points[_FINGER_TIPS["index"]])
                     gesture = self.process_landmarks(points)
 
-                    if gesture == "pinch" and pyautogui is not None and self._cursor_screen_pos:
+                    # Checked against the raw distance + its own fast
+                    # debounce, NOT the `gesture` value above — that one
+                    # is rate-limited to 1/sec (shared with wake/stop/
+                    # confirm) and can also get preempted by a swipe.
+                    # Clicking should feel responsive on its own.
+                    if (
+                        pinch_dist < _PINCH_THRESHOLD
+                        and pyautogui is not None
+                        and self._cursor_screen_pos
+                        and self._click_debounce.should_fire("click")
+                    ):
                         try:
                             pyautogui.click(*self._cursor_screen_pos)
-                            log.info(f"Gesture click at {self._cursor_screen_pos}")
+                            log.info(f"Gesture click at {self._cursor_screen_pos} (pinch dist {pinch_dist:.3f})")
+                            last_label = f"CLICK @ {self._cursor_screen_pos}"
+                            last_action_ts = time.time()
                         except Exception:
                             log.exception("Gesture click failed")
 
                     if cfg.show_preview:
                         self._draw_landmarks(frame, points, highlight_index=pointing)
-                    if gesture:
+                    if gesture and gesture != "pinch":
                         last_label = f"{gesture} -> {GESTURE_ACTIONS.get(gesture, '?')}"
                         last_action_ts = time.time()
-                    elif pointing and self._cursor_screen_pos:
-                        last_label = f"pointing @ {self._cursor_screen_pos}"
+                    elif pointing and self._cursor_screen_pos and (time.time() - last_action_ts) > 0.6:
+                        last_label = f"pointing @ {self._cursor_screen_pos} | pinch dist {pinch_dist:.3f}"
                 else:
                     self._cursor_smoothed = None  # avoid a jump when the hand re-enters frame
                     if cfg.show_preview:

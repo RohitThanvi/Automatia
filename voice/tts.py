@@ -24,21 +24,40 @@ class TextToSpeech(ABC):
 
 
 class Pyttsx3TTS(TextToSpeech):
+    """A fresh pyttsx3 engine is created for every speak() call rather
+    than reused. Reusing one engine instance across multiple say()/
+    runAndWait() cycles is a well-known pyttsx3-on-Windows failure mode:
+    the SAPI5 COM driver works for the first utterance and then silently
+    stops producing audio on later calls, with no exception raised —
+    it just goes quiet. Recreating the engine costs a small amount of
+    latency per call but is what actually keeps this reliable."""
+
     def __init__(self) -> None:
+        self._cfg = get_config().tts
+
+    def _new_engine(self):
         import pyttsx3
 
-        cfg = get_config().tts
-        self._engine = pyttsx3.init()
-        self._engine.setProperty("rate", cfg.rate)
-        if cfg.voice:
-            self._engine.setProperty("voice", cfg.voice)
+        engine = pyttsx3.init()
+        engine.setProperty("rate", self._cfg.rate)
+        if self._cfg.voice:
+            engine.setProperty("voice", self._cfg.voice)
+        return engine
 
     def speak(self, text: str) -> None:
         if not text.strip():
             return
         log.info(f"Speaking ({len(text)} chars)")
-        self._engine.say(text)
-        self._engine.runAndWait()
+        try:
+            engine = self._new_engine()
+            engine.say(text)
+            engine.runAndWait()
+            engine.stop()
+        except Exception:
+            # Never let a TTS hiccup take down the whole voice loop —
+            # better to silently skip one spoken reply than crash the
+            # process and go fully unresponsive.
+            log.exception("TTS speak() failed — continuing without audio for this reply")
 
 
 class PiperTTS(TextToSpeech):

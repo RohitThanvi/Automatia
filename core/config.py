@@ -48,6 +48,10 @@ class AudioConfig(BaseModel):
     silence_timeout_ms: int = 900
     end_phrase: Optional[str] = None
     end_phrase_recheck_ms: int = 1500
+    # After handling one command, how long to keep listening for a
+    # follow-up without requiring the wake word again. Goes back to
+    # wake-word-only mode after this much silence.
+    follow_up_timeout_s: float = 8.0
 
 
 class SttConfig(BaseModel):

@@ -82,7 +82,15 @@ class AudioRecorder:
                 "behavior. Construct AudioRecorder(stt=...) to enable end-phrase mode."
             )
 
-    def record_utterance(self) -> np.ndarray:
+    def record_utterance(self, max_wait_for_speech_s: Optional[float] = None) -> np.ndarray:
+        """max_wait_for_speech_s: if speech never starts within this many
+        seconds, give up early and return whatever's been captured
+        (usually empty) instead of waiting out the full
+        max_utterance_seconds cap. Used for the post-wake "keep
+        listening for a follow-up" window — going quiet there should
+        return to wake-word mode in a few seconds, not up to a minute.
+        None (the default) preserves the original wake-word-triggered
+        behavior exactly."""
         cfg = self._cfg
         end_phrase = cfg.end_phrase if self._stt is not None else None
         q: queue.Queue[np.ndarray] = queue.Queue()
@@ -110,6 +118,13 @@ class AudioRecorder:
             while True:
                 if time.time() - start_time > cfg.max_utterance_seconds:
                     log.info("Max utterance length reached")
+                    break
+                if (
+                    max_wait_for_speech_s is not None
+                    and not speech_detected
+                    and time.time() - start_time > max_wait_for_speech_s
+                ):
+                    log.info("No speech detected within follow-up window, giving up")
                     break
                 try:
                     chunk = q.get(timeout=1.0)

@@ -226,16 +226,41 @@ def run_voice_mode() -> None:
                     agent.start_wake()
                     tts.speak("I'm listening.")
 
-                    audio = recorder.record_utterance()
-                    text = stt.transcribe(audio)
-                    if not text:
-                        tts.speak("I didn't catch that.")
-                        continue
+                    # Stay in an active conversation after the first
+                    # command: keep taking follow-up utterances without
+                    # requiring the wake word again, until the user goes
+                    # quiet for cfg.audio.follow_up_timeout_s. Wrapped in
+                    # try/except so one bad turn (agent error, TTS
+                    # hiccup) logs and drops back to wake-word mode
+                    # instead of crashing the whole process — "awake
+                    # until the system is on" means it has to survive a
+                    # single failed turn.
+                    first_turn = True
+                    while True:
+                        try:
+                            apply_pending_commands()
+                            apply_pending_gesture_actions()
+                            if muted.is_set() or agent.sm.state == AgentState.PAUSED:
+                                break
 
-                    text = strip_end_phrase(text, cfg.audio.end_phrase)
-                    log.info(f"User said: {text}")
-                    reply = agent.handle_utterance(text)
-                    tts.speak(reply)
+                            wait_s = None if first_turn else cfg.audio.follow_up_timeout_s
+                            audio = recorder.record_utterance(max_wait_for_speech_s=wait_s)
+                            text = stt.transcribe(audio)
+                            if not text:
+                                if first_turn:
+                                    tts.speak("I didn't catch that.")
+                                    break
+                                log.info("No follow-up speech — back to wake-word mode")
+                                break
+
+                            text = strip_end_phrase(text, cfg.audio.end_phrase)
+                            log.info(f"User said: {text}")
+                            reply = agent.handle_utterance(text)
+                            tts.speak(reply)
+                            first_turn = False
+                        except Exception:
+                            log.exception("Error handling utterance — returning to wake-word mode")
+                            break
                     wake.reset()
         except KeyboardInterrupt:
             log.info("Shutting down.")
