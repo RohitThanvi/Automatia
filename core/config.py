@@ -85,6 +85,7 @@ class GesturesConfig(BaseModel):
     enabled: bool = False
     camera_index: int = 0
     show_preview: bool = True  # open a debug window with the camera feed + landmark overlay
+    cursor_control: bool = True  # index-finger-tracks-cursor + pinch-to-click
 
 
 class SecurityConfig(BaseModel):

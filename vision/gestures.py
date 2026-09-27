@@ -56,9 +56,29 @@ _HAND_CONNECTIONS = [
     (0, 17),                                  # palm base
 ]
 
+# Cursor-tracking tuning. Index fingertip position only drives the OS
+# cursor while the index finger is "extended" per get_extended_fingers —
+# curl your fingers (fist/thumbs-up) to act as a clutch and freeze the
+# cursor while you reposition your hand, same idea as lifting a mouse
+# off the pad.
+_CURSOR_SMOOTHING = 0.35  # EMA factor: higher = snappier, lower = smoother but laggier
+_CURSOR_MARGIN = 0.12     # fraction trimmed off each camera-frame edge before mapping to
+                          # the screen, so you don't have to reach into the frame's corners
+
 
 def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+
+
+def get_extended_fingers(landmarks: list[tuple[float, float]]) -> dict[str, bool]:
+    """A finger counts as "extended" when its tip is meaningfully above
+    (smaller y than) its own PIP joint — shared by classify_static_gesture
+    and by the cursor-tracking gate below (index extended = 'pointing',
+    which drives the cursor; curled = clutch, cursor freezes in place)."""
+    return {
+        name: landmarks[tip][1] < landmarks[_FINGER_PIPS[name]][1] - 0.02
+        for name, tip in _FINGER_TIPS.items()
+    }
 
 
 def classify_static_gesture(landmarks: list[tuple[float, float]]) -> Optional[str]:
@@ -73,14 +93,7 @@ def classify_static_gesture(landmarks: list[tuple[float, float]]) -> Optional[st
     if len(landmarks) != 21:
         return None
 
-    # A finger counts as "extended" when its tip is meaningfully above
-    # (smaller y than) its own PIP joint — a simple, orientation-
-    # sensitive but camera-facing-user heuristic that's good enough for
-    # the five gestures this agent needs.
-    extended = {
-        name: landmarks[tip][1] < landmarks[_FINGER_PIPS[name]][1] - 0.02
-        for name, tip in _FINGER_TIPS.items()
-    }
+    extended = get_extended_fingers(landmarks)
     thumb_extended = landmarks[_THUMB_TIP][0] > landmarks[_THUMB_MCP][0] + 0.02 or \
         landmarks[_THUMB_TIP][0] < landmarks[_THUMB_MCP][0] - 0.02
 
@@ -133,6 +146,8 @@ class GestureController:
         self._swipe_window_s = 0.5
         self._swipe_min_delta = 0.25  # fraction of frame width
         self._paused = paused  # set externally (e.g. by the dashboard's "disable gestures" command)
+        self._cursor_smoothed: Optional[tuple[float, float]] = None
+        self._cursor_screen_pos: Optional[tuple[int, int]] = None
 
     def _check_swipe(self, wrist_x: float) -> Optional[str]:
         now = time.time()
@@ -180,6 +195,39 @@ class GestureController:
                 return cap
             cap.release()
         return cv2.VideoCapture(camera_index)
+
+    @staticmethod
+    def _map_to_screen(nx: float, ny: float, screen_w: int, screen_h: int) -> tuple[int, int]:
+        """Map a normalized (0..1) camera-frame point to screen pixel
+        coordinates, trimming _CURSOR_MARGIN off each edge first so the
+        reachable area of the camera view maps to the full screen."""
+        def scale(v: float) -> float:
+            v = (v - _CURSOR_MARGIN) / (1 - 2 * _CURSOR_MARGIN)
+            return min(max(v, 0.0), 1.0)
+
+        return int(scale(nx) * screen_w), int(scale(ny) * screen_h)
+
+    def _update_cursor(self, pyautogui, points: list[tuple[float, float]], screen_w: int, screen_h: int) -> None:
+        ix, iy = points[_FINGER_TIPS["index"]]
+        if self._cursor_smoothed is None:
+            self._cursor_smoothed = (ix, iy)
+        else:
+            sx, sy = self._cursor_smoothed
+            self._cursor_smoothed = (
+                sx + _CURSOR_SMOOTHING * (ix - sx),
+                sy + _CURSOR_SMOOTHING * (iy - sy),
+            )
+        screen_x, screen_y = self._map_to_screen(*self._cursor_smoothed, screen_w, screen_h)
+        try:
+            # _pause=False: skip pyautogui's global inter-call pause
+            # (set to 0.05s elsewhere for discrete agent actions) — at
+            # continuous per-frame tracking rates that pause would make
+            # the cursor visibly stutter.
+            pyautogui.moveTo(screen_x, screen_y, duration=0, _pause=False)
+        except pyautogui.FailSafeException:
+            log.warning("Cursor hit a screen corner (pyautogui failsafe) — tracking paused this frame")
+            return
+        self._cursor_screen_pos = (screen_x, screen_y)
 
     @staticmethod
     def _load_mediapipe_hands():
@@ -244,6 +292,13 @@ class GestureController:
         window_name = "Automatia — Gesture View"
         last_label = "no hand"
         last_action_ts = 0.0
+        pyautogui = None
+        screen_w = screen_h = 0
+        if cfg.cursor_control:
+            import pyautogui as _pyautogui
+            pyautogui = _pyautogui
+            pyautogui.FAILSAFE = True  # move the real cursor into a screen corner to abort tracking
+            screen_w, screen_h = pyautogui.size()
         log.info(f"Gesture loop started on camera {cfg.camera_index}")
         try:
             while True:
@@ -260,14 +315,30 @@ class GestureController:
                 if result.multi_hand_landmarks:
                     lm = result.multi_hand_landmarks[0].landmark
                     points = [(p.x, p.y) for p in lm]
+                    pointing = pyautogui is not None and get_extended_fingers(points)["index"]
+                    if pointing:
+                        self._update_cursor(pyautogui, points, screen_w, screen_h)
+
                     gesture = self.process_landmarks(points)
+
+                    if gesture == "pinch" and pyautogui is not None and self._cursor_screen_pos:
+                        try:
+                            pyautogui.click(*self._cursor_screen_pos)
+                            log.info(f"Gesture click at {self._cursor_screen_pos}")
+                        except Exception:
+                            log.exception("Gesture click failed")
+
                     if cfg.show_preview:
-                        self._draw_landmarks(frame, points)
+                        self._draw_landmarks(frame, points, highlight_index=pointing)
                     if gesture:
                         last_label = f"{gesture} -> {GESTURE_ACTIONS.get(gesture, '?')}"
                         last_action_ts = time.time()
-                elif cfg.show_preview:
-                    last_label = "no hand"
+                    elif pointing and self._cursor_screen_pos:
+                        last_label = f"pointing @ {self._cursor_screen_pos}"
+                else:
+                    self._cursor_smoothed = None  # avoid a jump when the hand re-enters frame
+                    if cfg.show_preview:
+                        last_label = "no hand"
 
                 if cfg.show_preview:
                     self._draw_hud(frame, last_label, last_action_ts)
@@ -291,7 +362,7 @@ class GestureController:
             cv2.destroyAllWindows()
 
     @staticmethod
-    def _draw_landmarks(frame, points: list[tuple[float, float]]) -> None:
+    def _draw_landmarks(frame, points: list[tuple[float, float]], highlight_index: bool = False) -> None:
         import cv2
 
         h, w = frame.shape[:2]
@@ -301,6 +372,11 @@ class GestureController:
         for i, (x, y) in enumerate(px):
             color = (0, 140, 255) if i in _FINGER_TIPS.values() or i == _THUMB_TIP else (0, 220, 0)
             cv2.circle(frame, (x, y), 5, color, -1)
+        if highlight_index:
+            # Cursor is actively tracking this fingertip — draw a ring
+            # around it so it's obvious at a glance vs. the clutch state.
+            ix, iy = px[_FINGER_TIPS["index"]]
+            cv2.circle(frame, (ix, iy), 14, (0, 255, 255), 2)
 
     @staticmethod
     def _draw_hud(frame, label: str, last_action_ts: float) -> None:

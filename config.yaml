@@ -72,6 +72,7 @@ gestures:
   enabled: true                 # off by default; implemented in Phase 6
   camera_index: 0
   show_preview: true            # camera window with hand-landmark overlay + detected gesture label
+  cursor_control: true          # point with index finger to move the OS cursor, pinch to click
 
 security:
   require_confirmation: true
