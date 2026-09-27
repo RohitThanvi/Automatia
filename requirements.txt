@@ -54,7 +54,7 @@ uvicorn>=0.30.0
 pystray>=0.19.5
 
 # ---- Gesture recognition (Phase 6) ----
-mediapipe>=0.10.14
+mediapipe==0.10.14  # pinned: newer 0.10.x builds on some platforms/Python versions ship without the legacy `mediapipe.solutions` API this module uses
 opencv-python>=4.10.0
 
 # ---- Testing ----

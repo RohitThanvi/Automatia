@@ -71,6 +71,7 @@ tts:
 gestures:
   enabled: true                 # off by default; implemented in Phase 6
   camera_index: 0
+  show_preview: true            # camera window with hand-landmark overlay + detected gesture label
 
 security:
   require_confirmation: true

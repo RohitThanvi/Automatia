@@ -43,6 +43,19 @@ GESTURE_ACTIONS: dict[str, str] = {
     "swipe_right": "next",
 }
 
+# The 21 MediaPipe Hands landmarks, connected as bones, for drawing the
+# skeleton overlay ourselves. Kept independent of mp.solutions.drawing_utils
+# (same "legacy solutions" surface that broke — see run()), so the preview
+# window still works even on mediapipe builds that trim that helper.
+_HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),          # thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),          # index
+    (5, 9), (9, 10), (10, 11), (11, 12),     # middle
+    (9, 13), (13, 14), (14, 15), (15, 16),   # ring
+    (13, 17), (17, 18), (18, 19), (19, 20),  # pinky
+    (0, 17),                                  # palm base
+]
+
 
 def _dist(a: tuple[float, float], b: tuple[float, float]) -> float:
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
@@ -152,22 +165,69 @@ class GestureController:
             self._on_action(action)
         return gesture
 
+    @staticmethod
+    def _load_mediapipe_hands():
+        """Import mediapipe and return the Hands class, tolerating builds
+        where `mediapipe.solutions` isn't exposed on the top-level package
+        (a real, observed breakage on some mediapipe/Python combinations —
+        the fix is really to run `pip install mediapipe==0.10.14`, but we
+        fail with a clear message instead of a bare AttributeError)."""
+        import mediapipe as mp
+
+        try:
+            return mp.solutions.hands
+        except AttributeError:
+            pass
+        try:
+            from mediapipe.python.solutions import hands as mp_hands
+            return mp_hands
+        except ImportError as exc:
+            raise RuntimeError(
+                "This mediapipe install doesn't expose the legacy "
+                "`solutions` API that gestures.py needs. Run:\n"
+                "    pip uninstall mediapipe -y\n"
+                "    pip install mediapipe==0.10.14\n"
+                "then restart the app."
+            ) from exc
+
     def run(self) -> None:
         """Blocking webcam loop. Not covered by unit tests (needs a real
         camera + MediaPipe runtime) — process_landmarks() above is
-        exercised directly with synthetic data instead."""
+        exercised directly with synthetic data instead.
+
+        When cfg.show_preview is true, also opens a debug window showing
+        the live camera feed with the 21-point hand skeleton drawn on top
+        and the most recently fired gesture/action printed in the corner,
+        so you can see exactly what the recognizer is seeing."""
         cfg = get_config().gestures
         if not cfg.enabled:
             log.info("Gestures disabled in config; not starting camera loop")
             return
 
         import cv2
-        import mediapipe as mp
 
-        hands = mp.solutions.hands.Hands(
+        try:
+            mp_hands = self._load_mediapipe_hands()
+        except RuntimeError as exc:
+            log.error(str(exc))
+            return
+
+        hands = mp_hands.Hands(
             max_num_hands=1, min_detection_confidence=0.6, min_tracking_confidence=0.5
         )
         cap = cv2.VideoCapture(cfg.camera_index)
+        if not cap.isOpened():
+            log.error(
+                f"Could not open camera index {cfg.camera_index}. Check "
+                "config.yaml gestures.camera_index and that no other app "
+                "(Teams/Zoom/browser) is holding the webcam."
+            )
+            hands.close()
+            return
+
+        window_name = "Automatia — Gesture View"
+        last_label = "no hand"
+        last_action_ts = 0.0
         log.info(f"Gesture loop started on camera {cfg.camera_index}")
         try:
             while True:
@@ -175,12 +235,63 @@ class GestureController:
                 if not ok:
                     time.sleep(0.05)
                     continue
+
+                frame = cv2.flip(frame, 1)  # mirror, feels natural on screen
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 result = hands.process(rgb)
+
+                gesture = None
                 if result.multi_hand_landmarks:
                     lm = result.multi_hand_landmarks[0].landmark
                     points = [(p.x, p.y) for p in lm]
-                    self.process_landmarks(points)
+                    gesture = self.process_landmarks(points)
+                    if cfg.show_preview:
+                        self._draw_landmarks(frame, points)
+                    if gesture:
+                        last_label = f"{gesture} -> {GESTURE_ACTIONS.get(gesture, '?')}"
+                        last_action_ts = time.time()
+                elif cfg.show_preview:
+                    last_label = "no hand"
+
+                if cfg.show_preview:
+                    self._draw_hud(frame, last_label, last_action_ts)
+                    cv2.imshow(window_name, frame)
+                    # 1ms poll so the window redraws every frame; 'q' or Esc
+                    # closes just the preview window, the loop (and gesture
+                    # detection) keeps running headless afterward.
+                    key = cv2.waitKey(1) & 0xFF
+                    if key in (ord("q"), 27):
+                        cv2.destroyWindow(window_name)
+                        cfg.show_preview = False
         finally:
             cap.release()
             hands.close()
+            cv2.destroyAllWindows()
+
+    @staticmethod
+    def _draw_landmarks(frame, points: list[tuple[float, float]]) -> None:
+        import cv2
+
+        h, w = frame.shape[:2]
+        px = [(int(x * w), int(y * h)) for x, y in points]
+        for a, b in _HAND_CONNECTIONS:
+            cv2.line(frame, px[a], px[b], (0, 220, 0), 2)
+        for i, (x, y) in enumerate(px):
+            color = (0, 140, 255) if i in _FINGER_TIPS.values() or i == _THUMB_TIP else (0, 220, 0)
+            cv2.circle(frame, (x, y), 5, color, -1)
+
+    @staticmethod
+    def _draw_hud(frame, label: str, last_action_ts: float) -> None:
+        import cv2
+
+        highlight = (time.time() - last_action_ts) < 0.6  # flash briefly on fire
+        color = (0, 255, 255) if highlight else (255, 255, 255)
+        cv2.rectangle(frame, (0, 0), (frame.shape[1], 40), (30, 30, 30), -1)
+        cv2.putText(
+            frame, f"Gesture: {label}", (10, 27),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, "q / Esc: close preview", (frame.shape[1] - 200, 27),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
+        )
